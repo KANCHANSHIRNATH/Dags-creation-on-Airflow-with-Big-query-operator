@@ -1,0 +1,64 @@
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from datetime import datetime
+import yaml
+import os
+from airflow.utils.dates import days_ago
+from airflow.contrib.operators.bigquery_operator import BigQueryOperator
+
+def execute_sql(**kwargs):
+    dag_config = kwargs.get("dag_config")
+
+    # Read SQL file
+    sql_path = os.path.join(os.path.dirname(__file__), 'sql_files', dag_config['sql_file'])
+    with open(sql_path, 'r') as sql_file:
+        sql_statements = sql_file.read().split(';')
+    a=1
+    for sql_statement in sql_statements:
+        sql_statement = sql_statement.strip()
+        if sql_statement:
+            task_id = f"Execute_Query_{a}"
+            bq_task = BigQueryOperator(
+                task_id=task_id,
+                sql=sql_statement,
+                use_legacy_sql=False,
+                dag=kwargs['dag']
+            )
+            bq_task.execute(context=kwargs)
+            a=a+1
+
+def generate_dag(dag_id, schedule, sql_file):
+    default_args = {
+        'owner': 'airflow',
+        'start_date': days_ago(1),
+        'schedule_interval': schedule,
+    }
+
+    dag = DAG(
+        dag_id=dag_id,
+        default_args=default_args,
+        catchup=False
+    )
+
+    with dag:
+        execute_task = PythonOperator(
+            task_id='execute_sql_task',
+            python_callable=execute_sql,
+            op_args=[],
+            op_kwargs={'dag_config': config},
+            provide_context=True
+        )
+
+    return dag
+
+configs_path = os.path.join(os.path.dirname(__file__), 'yaml_configs')
+for config_file in os.listdir(configs_path):
+    if config_file.endswith('.yaml'):
+        with open(os.path.join(configs_path, config_file), 'r') as yaml_file:
+            config = yaml.safe_load(yaml_file)
+            dag_id = config['dag_name']
+            schedule = config['schedule']
+            sql_file = config['sql_file']
+            globals()[dag_id] = generate_dag(dag_id, schedule, sql_file)
+
+
